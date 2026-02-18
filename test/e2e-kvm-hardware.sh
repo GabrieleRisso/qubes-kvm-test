@@ -21,6 +21,7 @@ FAIL=0
 SKIP=0
 
 log()  { echo "[e2e] $*"; }
+note() { echo "[e2e]   $*"; }
 pass() { echo "  [PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "  [FAIL] $1"; FAIL=$((FAIL + 1)); }
 skip() { echo "  [SKIP] $1"; SKIP=$((SKIP + 1)); }
@@ -259,7 +260,7 @@ test_gpu() {
         local gpu_count=0
         while IFS= read -r line; do
             if echo "$line" | grep -qiE "VGA|3D|Display|GPU|Accelerator"; then
-                info "  GPU: $line"
+                note "  GPU: $line"
                 gpu_count=$((gpu_count + 1))
             fi
         done < <(lspci 2>/dev/null)
