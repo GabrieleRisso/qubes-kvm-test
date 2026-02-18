@@ -63,8 +63,11 @@ generate_domain_xml() {
         loader_xml="<loader readonly=\"yes\" type=\"pflash\">$ovmf</loader>"
     fi
 
+    local qubesdb_sock="/var/run/qubes/qubesdb.${name}.sock"
+    mkdir -p /var/run/qubes 2>/dev/null || true
+
     cat << XMLEOF
-<domain type="kvm" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
+<domain type="kvm">
     <name>$name</name>
     <memory unit="MiB">$mem</memory>
     <currentMemory unit="MiB">$mem</currentMemory>
@@ -72,16 +75,12 @@ generate_domain_xml() {
     <cpu mode="host-passthrough"/>
     <os>
         <type arch="x86_64" machine="q35">hvm</type>
-        $loader_xml
         <boot dev="hd"/>
     </os>
     <features>
         <pae/>
         <acpi/>
         <apic/>
-        <kvm>
-            <hidden state="on"/>
-        </kvm>
     </features>
     <clock offset="utc">
         <timer name="rtc" tickpolicy="catchup"/>
@@ -98,7 +97,8 @@ generate_domain_xml() {
             <source ${disk_source_attr}="${disk_abs}"/>
             <target dev="vda" bus="virtio"/>
         </disk>
-        <interface type="user">
+        <interface type="bridge">
+            <source bridge="virbr0"/>
             <model type="virtio"/>
         </interface>
         <console type="pty">
@@ -111,27 +111,16 @@ generate_domain_xml() {
             <target type="virtio" name="org.qemu.guest_agent.0"/>
         </channel>
         <channel type="unix">
-            <source mode="bind" path="/var/run/qubes/qubesdb.${name}.sock"/>
+            <source mode="bind" path="${qubesdb_sock}"/>
             <target type="virtio" name="org.qubes-os.qubesdb"/>
         </channel>
-        <vsock model="virtio">
-            <cid auto="yes"/>
-        </vsock>
         <memballoon model="virtio">
             <stats period="5"/>
         </memballoon>
         <rng model="virtio">
             <backend model="random">/dev/urandom</backend>
         </rng>
-        <input type="tablet" bus="virtio"/>
-        <input type="keyboard" bus="virtio"/>
     </devices>
-    <qemu:commandline>
-        <qemu:arg value="-accel"/>
-        <qemu:arg value="kvm,xen-version=$XEN_VERSION,kernel-irqchip=split"/>
-        <qemu:arg value="-cpu"/>
-        <qemu:arg value="host,+xen-vapic"/>
-    </qemu:commandline>
     <seclabel type="dynamic" model="dac" relabel="yes"/>
 </domain>
 XMLEOF
@@ -158,20 +147,11 @@ generate_install_xml() {
         disk_driver_type="raw"
     fi
 
-    local ovmf=""
-    for f in /usr/share/edk2/ovmf/OVMF_CODE.fd \
-             /usr/share/OVMF/OVMF_CODE.fd \
-             /usr/share/edk2/xen/OVMF.fd; do
-        [[ -f "$f" ]] && ovmf="$f" && break
-    done
-
-    local loader_xml=""
-    if [[ -n "$ovmf" ]]; then
-        loader_xml="<loader readonly=\"yes\" type=\"pflash\">$ovmf</loader>"
-    fi
+    local qubesdb_sock="/var/run/qubes/qubesdb.${name}.sock"
+    mkdir -p /var/run/qubes 2>/dev/null || true
 
     cat << XMLEOF
-<domain type="kvm" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
+<domain type="kvm">
     <name>$name</name>
     <memory unit="MiB">$mem</memory>
     <currentMemory unit="MiB">$mem</currentMemory>
@@ -179,7 +159,6 @@ generate_install_xml() {
     <cpu mode="host-passthrough"/>
     <os>
         <type arch="x86_64" machine="q35">hvm</type>
-        $loader_xml
         <boot dev="cdrom"/>
         <boot dev="hd"/>
     </os>
@@ -187,9 +166,6 @@ generate_install_xml() {
         <pae/>
         <acpi/>
         <apic/>
-        <kvm>
-            <hidden state="on"/>
-        </kvm>
     </features>
     <clock offset="utc">
         <timer name="rtc" tickpolicy="catchup"/>
@@ -212,7 +188,8 @@ generate_install_xml() {
             <target dev="sda" bus="sata"/>
             <readonly/>
         </disk>
-        <interface type="user">
+        <interface type="bridge">
+            <source bridge="virbr0"/>
             <model type="virtio"/>
         </interface>
         <console type="pty">
@@ -225,27 +202,16 @@ generate_install_xml() {
             <target type="virtio" name="org.qemu.guest_agent.0"/>
         </channel>
         <channel type="unix">
-            <source mode="bind" path="/var/run/qubes/qubesdb.${name}.sock"/>
+            <source mode="bind" path="${qubesdb_sock}"/>
             <target type="virtio" name="org.qubes-os.qubesdb"/>
         </channel>
-        <vsock model="virtio">
-            <cid auto="yes"/>
-        </vsock>
         <memballoon model="virtio">
             <stats period="5"/>
         </memballoon>
         <rng model="virtio">
             <backend model="random">/dev/urandom</backend>
         </rng>
-        <input type="tablet" bus="virtio"/>
-        <input type="keyboard" bus="virtio"/>
     </devices>
-    <qemu:commandline>
-        <qemu:arg value="-accel"/>
-        <qemu:arg value="kvm,xen-version=$XEN_VERSION,kernel-irqchip=split"/>
-        <qemu:arg value="-cpu"/>
-        <qemu:arg value="host,+xen-vapic"/>
-    </qemu:commandline>
     <seclabel type="dynamic" model="dac" relabel="yes"/>
 </domain>
 XMLEOF
@@ -432,7 +398,7 @@ cmd_verify() {
         die "Domain '$name' is not running (state: $state)"
     fi
 
-    echo "=== Verifying Xen emulation for: $name ==="
+    echo "=== Verifying Qubes-on-KVM domain: $name ==="
 
     local xml
     xml=$($VIRSH dumpxml "$name" 2>/dev/null || true)
@@ -440,48 +406,43 @@ cmd_verify() {
     local checks_passed=0 checks_total=0
 
     checks_total=$((checks_total + 1))
-    if echo "$xml" | grep -q "xen-version"; then
-        echo "  [PASS] QEMU Xen emulation flags present"
+    if echo "$xml" | grep -q "org.qubes-os.qubesdb"; then
+        echo "  [PASS] QubesDB virtio-serial channel configured"
         checks_passed=$((checks_passed + 1))
     else
-        echo "  [FAIL] No xen-version in domain XML"
+        echo "  [FAIL] QubesDB channel not found in domain XML"
     fi
 
     checks_total=$((checks_total + 1))
-    if echo "$xml" | grep -q "kernel-irqchip=split"; then
-        echo "  [PASS] kernel-irqchip=split configured"
+    if echo "$xml" | grep -q "bridge"; then
+        echo "  [PASS] Bridge networking configured"
         checks_passed=$((checks_passed + 1))
     else
-        echo "  [FAIL] kernel-irqchip=split not found"
+        echo "  [FAIL] Bridge networking not found"
     fi
 
     checks_total=$((checks_total + 1))
-    if echo "$xml" | grep -q "xen-vapic"; then
-        echo "  [PASS] xen-vapic CPU flag enabled"
+    local qubesdb_sock="/var/run/qubes/qubesdb.${name}.sock"
+    if [[ -S "$qubesdb_sock" ]]; then
+        echo "  [PASS] QubesDB socket active: $qubesdb_sock"
         checks_passed=$((checks_passed + 1))
     else
-        echo "  [WARN] xen-vapic not found (optional but recommended)"
+        echo "  [WARN] QubesDB socket not found: $qubesdb_sock"
     fi
 
     checks_total=$((checks_total + 1))
-    if echo "$xml" | grep -q "xen-evtchn=on"; then
-        echo "  [PASS] Xen event channel emulation enabled"
+    local vm_ip
+    vm_ip=$(virsh net-dhcp-leases default 2>/dev/null | grep "$name" | awk '{print $5}' | cut -d/ -f1 || true)
+    if [[ -n "$vm_ip" ]]; then
+        echo "  [PASS] VM has DHCP lease: $vm_ip"
         checks_passed=$((checks_passed + 1))
     else
-        echo "  [INFO] xen-evtchn not explicitly enabled"
-    fi
-
-    checks_total=$((checks_total + 1))
-    if echo "$xml" | grep -q "xen-gnttab=on"; then
-        echo "  [PASS] Xen grant table emulation enabled"
-        checks_passed=$((checks_passed + 1))
-    else
-        echo "  [INFO] xen-gnttab not explicitly enabled"
+        echo "  [WARN] No DHCP lease found for $name"
     fi
 
     echo ""
     echo "  Checks: $checks_passed/$checks_total passed"
-    [[ $checks_passed -ge 2 ]] && echo "  Xen-on-KVM emulation: VERIFIED"
+    [[ $checks_passed -ge 2 ]] && echo "  Qubes-on-KVM domain: VERIFIED"
 }
 
 cmd_generate_xml() {
@@ -575,8 +536,11 @@ generate_gpu_domain_xml() {
     done
     unset IFS
 
+    local qubesdb_sock="/var/run/qubes/qubesdb.${name}.sock"
+    mkdir -p /var/run/qubes 2>/dev/null || true
+
     cat << XMLEOF
-<domain type="kvm" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
+<domain type="kvm">
     <name>$name</name>
     <memory unit="MiB">$mem</memory>
     <currentMemory unit="MiB">$mem</currentMemory>
@@ -611,7 +575,8 @@ generate_gpu_domain_xml() {
             <source ${disk_source_attr}="${disk_abs}"/>
             <target dev="vda" bus="virtio"/>
         </disk>
-        <interface type="user">
+        <interface type="bridge">
+            <source bridge="virbr0"/>
             <model type="virtio"/>
         </interface>
         <console type="pty">
@@ -624,27 +589,16 @@ generate_gpu_domain_xml() {
             <target type="virtio" name="org.qemu.guest_agent.0"/>
         </channel>
         <channel type="unix">
-            <source mode="bind" path="/var/run/qubes/qubesdb.${name}.sock"/>
+            <source mode="bind" path="${qubesdb_sock}"/>
             <target type="virtio" name="org.qubes-os.qubesdb"/>
         </channel>
-        <vsock model="virtio">
-            <cid auto="yes"/>
-        </vsock>
         <memballoon model="virtio">
             <stats period="5"/>
         </memballoon>
         <rng model="virtio">
             <backend model="random">/dev/urandom</backend>
         </rng>
-        <input type="tablet" bus="virtio"/>
-        <input type="keyboard" bus="virtio"/>
 $hostdev_block    </devices>
-    <qemu:commandline>
-        <qemu:arg value="-accel"/>
-        <qemu:arg value="kvm,xen-version=$XEN_VERSION,kernel-irqchip=split"/>
-        <qemu:arg value="-cpu"/>
-        <qemu:arg value="host,+xen-vapic"/>
-    </qemu:commandline>
     <seclabel type="dynamic" model="dac" relabel="yes"/>
 </domain>
 XMLEOF
