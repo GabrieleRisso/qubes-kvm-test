@@ -1,0 +1,12 @@
+agent/.venv/
+vm-images/*.qcow2
+vm-images/*.img
+test/results/
+build/
+*.o
+*.so
+*.a
+__pycache__/
+*.pyc
+.qubes-kvm-*.conf
+*.log
